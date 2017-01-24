@@ -1,6 +1,8 @@
+#include <EEPROM.h>
 #include <SD.h>
 #include <SPI.h>
 #include <Wire.h>
+
 #include "RTClib.h"
 
 RTC_DS1307 rtc; // This is used to fetch the RealTime Clock
@@ -30,11 +32,23 @@ boolean lastButton = HIGH;
 
 int counter = 0;
 float PowerVals[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; // Used to compute the running average.
+float VoltVals[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; // Used to compute the running average of Volts
+float CurrentVals[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; // Used to compute the running average of Amperes
 
+float avgVolt = 0;
+float avgCurrent = 0;
 float avgPower = 0;
-float Energy = 0;
+
+float Energy; // = 0.000f;
+float Energy1; // = 0.000f;
+float newEnergy;
+
+
+//float** Energy_ptr;
 
 boolean resetFlag = false;
+
+int reset = 1;
 
 void setup() {
   // put your setup code here, to run once:
@@ -124,14 +138,46 @@ void setup() {
   clearLCD(); // Clear the Contents of LCD.
   displayOn(); // LCD Display On
   cursorHome(); // Set the LCD
+
+  // Getting the Stored Energy values from the EEPROM.
+  /*EEPROM.get(0,Energy);
+  float newEnergy = Energy;
+  Serial.print(newEnergy);
+  Serial.print(" Joules");
+  Serial.println("");
+  EEPROM.put(0, newEnergy); */
+
+  
+  /* EEPROM.get(100,Energy1);
+  float newEnergy1 = Energy1;
+  Serial.print(newEnergy1);
+  Serial.print(" Joules");
+  Serial.println("");
+  EEPROM.put(100, newEnergy1); */
+
+  //*Energy_ptr = &Energy;
+  
+  //Serial.println(Energy,3);
+  //Serial.println(Energy1,3);
+  
+  //**Energy_ptr = Energy;
+  
+//  EEPROM.put(0,Energy);
+//  EEPROM.put(10,Energy1);
+  
+  clearLCD(); // Clear the Contents of LCD.
+  
+  reset = 1;
 }
 
 void loop() {
-
+  
   // put your main code here, to run repeatedly:
   DateTime now = rtc.now();
 
-  externalReset();
+  // This function is used to read the input from the External RESET Button
+  //externalReset();
+  
   unsigned long millisVal = millis();
 
   float Volt = readVoltage(); // Instantaneous Battery Voltage
@@ -142,26 +188,53 @@ void loop() {
     // Reading the Instanenous Power Values Pi, into a Circular Buffer
     counter = (counter + 1) % 10;
     PowerVals[counter] = Power;
+    
+    // Need to calculate the Running Average
+    VoltVals[counter] = Volt;
+    CurrentVals[counter] = readCurrent();
   }
 
+  // Logging the Running average of the Voltage and Current for every 200 ms.
+  if(millisVal % 200 == 0) {
+    
+     // Calculating the Running Average of Voltage and Current every 200 ms
+     avgVolt = calcAvg(VoltVals, 10);
+     avgCurrent = calcAvg(CurrentVals, 10);
+    
+     logFile = SD.open(filename, FILE_WRITE);
+     logFile.print(millisVal);
+     logFile.print(",");
+     logFile.print(avgVolt); // Running Average of Voltage
+     logFile.print(",");
+     logFile.print(avgCurrent); // Running Average of Current
+     logFile.close(); // Closing the logFile file pointer.
+  }
+  
   // Logging the Power every 1 Second
   if (millisVal % 1000 == 0) {
+    
     // The below line is used to compute the 1Sec average Power
     avgPower = calcAvg(PowerVals, 10);
+
+    // Writing the Power Value to the LCD
     cursorHome();
     Serial.write("Power: ");
-    cursorSet(0, 8); // Here 8 is (no. of characters in "Power: " + 1, 0 => First Line
+    cursorSet(0, 8); // Here 8 is no. of characters in "Power: " + 1, 0 => First Line
     Serial.write(Serial.print(avgPower / 1000, 2));
     cursorSet(0, 13);
     Serial.write(" kW");
-    Energy = Energy + avgPower; // Finding the Energy Consumption every Second
-    saveLogData(Volt, avgPower, millisVal, Energy); // Logging the Power Data
+
+    // Fetching the stored EEPROM value when the board is reset or is powered.      
+    EEPROM.get(0, Energy);
+    clearLCD();
+    Energy += abs(avgPower)/1000; // Finding the Energy Consumption every Second
+
+    // Writing the Value of Energy to the EEPROM Memory so that the most recent Energy Value is available even when the power is switched off.
+    EEPROM.put(0, Energy);
+    EEPROM.put(100, Energy); // Just Making a Duplicate Copy
+    
+    saveLogData(avgPower, millisVal, Energy); // Logging the Power Data
   }
-
-  // Logging the Power every 2 seconds
-  /*if(millisVal % LOG_INTERVAL == 0) {
-
-  }*/
 }
 
 // Debouncing PushButton
@@ -212,8 +285,8 @@ float readVoltage() {
   return ((analogRead(VoltIn) / 1023.0) * 5.0);
 }
 
-void saveLogData(float Volt, float Power, unsigned long millisVal, float Energy) {
-
+// Power in Watts, Energy in KiloJoules
+void saveLogData(float Power, unsigned long millisVal, float Energy) {
   // This opens a new file for writing if it doesn't exist
   // Else it will append the data to the end of the file
   logFile = SD.open(filename, FILE_WRITE);
@@ -222,35 +295,36 @@ void saveLogData(float Volt, float Power, unsigned long millisVal, float Energy)
   logFile.print(millisVal);
   logFile.print(",");
 
+  Serial.println("");
   Serial.print(millisVal);
-  Serial.print(",");
+  Serial.print(", ");
 
-  logFile.print(Volt);
-  logFile.print(",");
+//  logFile.print(Volt);
+//  logFile.print(",");
 
-  Serial.print(Volt);
-  Serial.print(",");
+  logFile.print(Power/1000); // Logging the Power in kW
 
-  logFile.print(Power);
-
-  Serial.print(Power);
-
+  Serial.print(Power/1000);
+  
   // Logging the Energy every 10 Seconds
   if ((millisVal % (5 * LOG_INTERVAL)) == 0) {
     logFile.print(",");
-    logFile.print(Energy); // 10s Interval
+    logFile.print(Energy); // 10s Interval and Logging the Energy in kJ
 
-    if ((Energy / 1000) > 10) {
+    if ((Energy) > 10) {
       digitalWrite(redLEDPin, HIGH);
     }
 
+    // Serial Monitor
     Serial.print(",");
-    Serial.print(Energy);
+    Serial.print(Energy); // Storing the Energy Value in kJ
 
+    // Writing to the Serial LCD
     cursorSet(1, 0);
     Serial.write("Energy: ");
     cursorSet(1, 9);
-    Serial.write(Serial.print(Energy / 1000, 2));
+
+    Serial.write(Serial.print(Energy, 2));
     cursorSet(1, 13);
     Serial.write(" kJ");
   }
