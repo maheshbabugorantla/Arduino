@@ -32,8 +32,11 @@ boolean lastButton = HIGH;
 
 int counter = 0;
 float PowerVals[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; // Used to compute the running average.
-float VoltVals[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; // Used to compute the running average of Volts
-float CurrentVals[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; // Used to compute the running average of Amperes
+float VoltVals[20] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; // Used to compute the Moving Window Average of Volts
+float CurrentVals[20] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; // Used to compute the running average of Amperes
+
+float sumCurrent = 0;
+float sumVoltage = 0;
 
 float avgVolt = 0;
 float avgCurrent = 0;
@@ -41,14 +44,9 @@ float avgPower = 0;
 
 float Energy; // = 0.000f;
 float Energy1; // = 0.000f;
-float newEnergy;
-
-
-//float** Energy_ptr;
+float newEnergy = 0;
 
 boolean resetFlag = false;
-
-int reset = 1;
 
 void setup() {
   // put your setup code here, to run once:
@@ -75,9 +73,11 @@ void setup() {
   if (!rtc.isrunning()) {
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   }
+  
   // Initialize the SD Card
   Serial.print("Initializing SD card... ");
-
+  delay(500);
+  
   // Make sure that default chip select pin is set to output
   // even if you don't use it:
   pinMode(chipSelect, OUTPUT);
@@ -89,14 +89,17 @@ void setup() {
   }
 
   Serial.println("Card Initialized");
-
+  delay(500);
+  
   Serial.print("Logging to: ");
   Serial.println(filename);
-
+  delay(1000);
+  
   logFile = SD.open(filename, FILE_WRITE);
   // Don't forget to use RTC here.
   // Insert the Time Stamp for new logging
 
+  // This below piece of code inserts the Time Stamp for new Logging every time when Power is RESET.
   DateTime now = rtc.now();
   logFile.println("");
   logFile.print(now.month(), DEC);
@@ -131,43 +134,15 @@ void setup() {
   Serial.print(now.second(), DEC);
   Serial.println();
 
-  logFile.println("millis,light,Power,Energy");
+  logFile.println("millis,Volt,Current,Power,Energy");
   logFile.close();
-  Serial.println("millis,light,Power,Energy");
+  Serial.println("millis,Volt,Current,Power,Energy");
 
   clearLCD(); // Clear the Contents of LCD.
   displayOn(); // LCD Display On
   cursorHome(); // Set the LCD
 
-  // Getting the Stored Energy values from the EEPROM.
-  /*EEPROM.get(0,Energy);
-  float newEnergy = Energy;
-  Serial.print(newEnergy);
-  Serial.print(" Joules");
-  Serial.println("");
-  EEPROM.put(0, newEnergy); */
-
-  
-  /* EEPROM.get(100,Energy1);
-  float newEnergy1 = Energy1;
-  Serial.print(newEnergy1);
-  Serial.print(" Joules");
-  Serial.println("");
-  EEPROM.put(100, newEnergy1); */
-
-  //*Energy_ptr = &Energy;
-  
-  //Serial.println(Energy,3);
-  //Serial.println(Energy1,3);
-  
-  //**Energy_ptr = Energy;
-  
-//  EEPROM.put(0,Energy);
-//  EEPROM.put(10,Energy1);
-  
   clearLCD(); // Clear the Contents of LCD.
-  
-  reset = 1;
 }
 
 void loop() {
@@ -180,66 +155,44 @@ void loop() {
   
   unsigned long millisVal = millis();
 
-  float Volt = readVoltage(); // Instantaneous Battery Voltage
-  float Power = Volt * readCurrent(); // Instananeous Power
-
-  // Reading the Power every 100 milliseconds
-  if (millisVal % 100 == 0) {
-    // Reading the Instanenous Power Values Pi, into a Circular Buffer
-    counter = (counter + 1) % 10;
-    PowerVals[counter] = Power;
-    
-    // Need to calculate the Running Average
-    VoltVals[counter] = Volt;
-    CurrentVals[counter] = readCurrent();
-  }
-
-  // Logging the Running average of the Voltage and Current for every 200 ms.
+  // Logging the Moving Window average of the Voltage and Current for every 200 ms.
   if(millisVal % 200 == 0) {
+
+    counter = (counter + 1) % 20;
+   
+    // Need to calculate the Running Average
+    VoltVals[counter] = readVoltage();
+    CurrentVals[counter] = readCurrent();
     
      // Calculating the Running Average of Voltage and Current every 200 ms
-     avgVolt = calcAvg(VoltVals, 10);
-     avgCurrent = calcAvg(CurrentVals, 10);
-    
-     logFile = SD.open(filename, FILE_WRITE);
-     logFile.print(millisVal);
-     logFile.print(",");
-     logFile.print(avgVolt); // Running Average of Voltage
-     logFile.print(",");
-     logFile.print(avgCurrent); // Running Average of Current
-     logFile.close(); // Closing the logFile file pointer.
+     avgVolt = MWAvg(counter, &sumVoltage, VoltVals);
+     avgCurrent = MWAvg(counter, &sumCurrent, CurrentVals);
+     float Power = avgVolt * avgCurrent;
+
+     newEnergy += abs(Power) * 0.2;
+     
+     // Saving the Data to a LogFile.
+     saveLogData(avgVolt, avgCurrent, Power, millisVal, abs(Power) * 0.2);
   }
   
-  // Logging the Power every 1 Second
-  if (millisVal % 1000 == 0) {
-    
-    // The below line is used to compute the 1Sec average Power
-    avgPower = calcAvg(PowerVals, 10);
-
-    // Writing the Power Value to the LCD
-    cursorHome();
-    Serial.write("Power: ");
-    cursorSet(0, 8); // Here 8 is no. of characters in "Power: " + 1, 0 => First Line
-    Serial.write(Serial.print(avgPower / 1000, 2));
-    cursorSet(0, 13);
-    Serial.write(" kW");
-
+  // Storing the Energy into the EEPROM every 10 Second
+  if (millisVal % 10000 == 0) {
+  
     // Fetching the stored EEPROM value when the board is reset or is powered.      
     EEPROM.get(0, Energy);
     clearLCD();
-    Energy += abs(avgPower)/1000; // Finding the Energy Consumption every Second
-
+    Energy += newEnergy / 1000; // Here we are computing cumulative energy value in kJ
+    Energy1 += newEnergy / 1000;
+    newEnergy = 0;
+    
     // Writing the Value of Energy to the EEPROM Memory so that the most recent Energy Value is available even when the power is switched off.
     EEPROM.put(0, Energy);
     EEPROM.put(100, Energy); // Just Making a Duplicate Copy
-    
-    saveLogData(avgPower, millisVal, Energy); // Logging the Power Data
   }
 }
 
 // Debouncing PushButton
-boolean debounce(boolean lastButton)
-{
+boolean debounce(boolean lastButton) {
   boolean currentButton = digitalRead(BUTTON);
 
   if (lastButton != currentButton)
@@ -286,7 +239,7 @@ float readVoltage() {
 }
 
 // Power in Watts, Energy in KiloJoules
-void saveLogData(float Power, unsigned long millisVal, float Energy) {
+void saveLogData(float Volt, float Current, float Power, unsigned long millisVal, float Energy) {
   // This opens a new file for writing if it doesn't exist
   // Else it will append the data to the end of the file
   logFile = SD.open(filename, FILE_WRITE);
@@ -299,15 +252,18 @@ void saveLogData(float Power, unsigned long millisVal, float Energy) {
   Serial.print(millisVal);
   Serial.print(", ");
 
-//  logFile.print(Volt);
-//  logFile.print(",");
+  logFile.print(Volt);
+  logFile.print(",");
 
+  logFile.print(Current);
+  logFile.print(",");
+    
   logFile.print(Power/1000); // Logging the Power in kW
 
   Serial.print(Power/1000);
   
-  // Logging the Energy every 10 Seconds
-  if ((millisVal % (5 * LOG_INTERVAL)) == 0) {
+  // Logging the Energy every 2 Seconds
+  if ((millisVal % LOG_INTERVAL) == 0) {
     logFile.print(",");
     logFile.print(Energy); // 10s Interval and Logging the Energy in kJ
 
@@ -335,7 +291,17 @@ void saveLogData(float Power, unsigned long millisVal, float Energy) {
   logFile.close();
 }
 
-float calcAvg(float* arrayVals, int vals) {
+// This is used to calculate the Moving Window Average.
+// REMEMBER: In this case, we are considering an array of 20 Values but just taking an Moving Window Average of past 10 values
+float MWAvg(int newIndex, float* sumVals, float* arrayVals) {
+    
+    int lastIndex = (10 + newIndex) % 20;
+    *sumVals = *sumVals - arrayVals[lastIndex] + arrayVals[newIndex];
+    return *sumVals / 10;
+//    return(sum - arrayVals[lastIndex] + arrayVals[newIndex]);        
+}
+
+/*float calcAvg(float* arrayVals, int vals) {
 
   int index = 0;
   float sum = 0;
@@ -343,7 +309,7 @@ float calcAvg(float* arrayVals, int vals) {
     sum += arrayVals[index];
   }
   return sum / vals;
-}
+}*/
 
 //  LCD  FUNCTIONS-- keep the ones you need.
 
