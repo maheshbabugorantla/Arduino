@@ -22,7 +22,7 @@ const int chipSelect = 10;
 
 // The Logging File
 File logFile;
-char filename[] = "LOGGER51.csv";
+char filename[] = "LOGGER52.csv";
 
 // Analog Sensors
 
@@ -54,6 +54,8 @@ void setup() {
   // This is default RS 232 Baud Rate as well (Used for LCD Display).
   // Changing this Value from 9600 to some other value will make LCD Work Abnormally.
   Serial.begin(9600);
+
+  unsigned long millisVal = millis();
 
   pinMode(VoltIn, INPUT);   // Analog Pin 0
   pinMode(CurrIn, INPUT); // Analog Pin 1
@@ -134,15 +136,23 @@ void setup() {
   Serial.print(now.second(), DEC);
   Serial.println();
 
-  logFile.println("millis,Volt,Current,Power,Energy");
+  logFile.println("millis,Volt,Current,Power(kW),Energy(kJ)");
   logFile.close();
-  Serial.println("millis,Volt,Current,Power,Energy");
+  Serial.println("millis,Volt,Current,Power(kW),Energy(kJ)");
 
   clearLCD(); // Clear the Contents of LCD.
   displayOn(); // LCD Display On
   cursorHome(); // Set the LCD
 
   clearLCD(); // Clear the Contents of LCD.
+
+
+  EEPROM.get(0, Energy);
+  resetFlag = true;
+
+  Serial.print("Setup Time: ");
+  Serial.print(millis() - millisVal);
+  Serial.println("");
 }
 
 void loop() {
@@ -150,6 +160,12 @@ void loop() {
   // put your main code here, to run repeatedly:
   DateTime now = rtc.now();
 
+  if(resetFlag) {
+    Serial.print("New Energy: ");
+    Serial.print(Energy);
+    Serial.println("");
+    resetFlag = false;
+  }
   // This function is used to read the input from the External RESET Button
   //externalReset();
   
@@ -170,18 +186,20 @@ void loop() {
      float Power = avgVolt * avgCurrent;
 
      newEnergy += abs(Power) * 0.2;
-     
+
      // Saving the Data to a LogFile.
-     saveLogData(avgVolt, avgCurrent, Power, millisVal, abs(Power) * 0.2);
+     saveLogData(avgVolt, avgCurrent, Power, millisVal, Energy + newEnergy/1000);
   }
-  
+
   // Storing the Energy into the EEPROM every 10 Second
   if (millisVal % 10000 == 0) {
-  
-    // Fetching the stored EEPROM value when the board is reset or is powered.      
+    // Fetching the stored EEPROM value when the board is reset or is powered.
     EEPROM.get(0, Energy);
     clearLCD();
     Energy += newEnergy / 1000; // Here we are computing cumulative energy value in kJ
+    Serial.print("Energy Stored: ");
+    Serial.print(Energy);
+    Serial.println("");
     Energy1 += newEnergy / 1000;
     newEnergy = 0;
     
@@ -262,27 +280,32 @@ void saveLogData(float Volt, float Current, float Power, unsigned long millisVal
 
   Serial.print(Power/1000);
   
-  // Logging the Energy every 2 Seconds
+  // Logging the Energy every 2 Seconds in the LogFile
   if ((millisVal % LOG_INTERVAL) == 0) {
     logFile.print(",");
-    logFile.print(Energy); // 10s Interval and Logging the Energy in kJ
+    logFile.print(Energy); // 2s Interval and Logging the Energy in kJ
+
+    if(millisVal % 10000 == 0) {
+      logFile.print(",");
+      logFile.print("(Energy Stored)");
+    }
 
     if ((Energy) > 10) {
       digitalWrite(redLEDPin, HIGH);
     }
-
+  
     // Serial Monitor
     Serial.print(",");
     Serial.print(Energy); // Storing the Energy Value in kJ
 
     // Writing to the Serial LCD
-    cursorSet(1, 0);
-    Serial.write("Energy: ");
-    cursorSet(1, 9);
+    //cursorSet(1, 0);
+    //Serial.write("Energy: ");
+    //cursorSet(1, 9);
 
-    Serial.write(Serial.print(Energy, 2));
-    cursorSet(1, 13);
-    Serial.write(" kJ");
+    //Serial.write(Serial.print(Energy, 2));
+    //cursorSet(1, 13);
+    //Serial.write(" kJ");
   }
 
   logFile.println("");
@@ -300,16 +323,6 @@ float MWAvg(int newIndex, float* sumVals, float* arrayVals) {
     return *sumVals / 10;
 //    return(sum - arrayVals[lastIndex] + arrayVals[newIndex]);        
 }
-
-/*float calcAvg(float* arrayVals, int vals) {
-
-  int index = 0;
-  float sum = 0;
-  for (index = 0; index < vals; index++) {
-    sum += arrayVals[index];
-  }
-  return sum / vals;
-}*/
 
 //  LCD  FUNCTIONS-- keep the ones you need.
 
@@ -397,7 +410,6 @@ void cursorRight() {
   Serial.write(254);
   Serial.write(74); // 0x4A
 }
-
 
 // set LCD contrast
 void setContrast(int contrast) {
