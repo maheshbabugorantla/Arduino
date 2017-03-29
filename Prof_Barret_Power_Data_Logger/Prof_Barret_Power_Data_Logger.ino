@@ -15,7 +15,11 @@ char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursd
 
 // Digital pins that connect to LEDs
 const int redLEDPin = 7; // Warning LED
-const int BUTTON = 2; // Switch Off Button
+const int BUTTON = 8; // Switch Off Button
+
+// This Pin is used to clear the EEPROM Memory
+// This is used to setup an interrupt to clear the EEPROM Memory when a button connected to Digital Pin 2 is pressed
+const int ClearMemory = 2;
 
 // for the data logging shield, we use digital pin 10 for the SD cs line
 const int chipSelect = 10;
@@ -31,7 +35,7 @@ boolean currentButton = LOW;
 boolean lastButton = HIGH;
 
 int counter = 0;
-float PowerVals[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; // Used to compute the running average.
+
 float VoltVals[20] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; // Used to compute the Moving Window Average of Volts
 float CurrentVals[20] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; // Used to compute the running average of Amperes
 
@@ -62,6 +66,9 @@ void setup() {
   pinMode(BUTTON, INPUT); // Configuring the Button Pin to the INPUT Mode
   pinMode(redLEDPin, OUTPUT); // Configuring the Warning LED Pin to the OUTPUT Mode
 
+  // Setting the EEPROM Clear Button
+  attachInterrupt(digitalPinToInterrupt(ClearMemory), reset_eeprom, RISING);
+  
   // Resetting the Warning LED
   digitalWrite(redLEDPin, LOW);
 
@@ -75,11 +82,11 @@ void setup() {
   if (!rtc.isrunning()) {
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   }
-  
+
   // Initialize the SD Card
   Serial.print("Initializing SD card... ");
   delay(500);
-  
+
   // Make sure that default chip select pin is set to output
   // even if you don't use it:
   pinMode(chipSelect, OUTPUT);
@@ -92,11 +99,11 @@ void setup() {
 
   Serial.println("Card Initialized");
   delay(500);
-  
+
   Serial.print("Logging to: ");
   Serial.println(filename);
   delay(1000);
-  
+
   logFile = SD.open(filename, FILE_WRITE);
   // Don't forget to use RTC here.
   // Insert the Time Stamp for new logging
@@ -156,11 +163,11 @@ void setup() {
 }
 
 void loop() {
-  
+
   // put your main code here, to run repeatedly:
   DateTime now = rtc.now();
 
-  if(resetFlag) {
+  if (resetFlag) {
     Serial.print("New Energy: ");
     Serial.print(Energy);
     Serial.println("");
@@ -168,27 +175,27 @@ void loop() {
   }
   // This function is used to read the input from the External RESET Button
   //externalReset();
-  
+
   unsigned long millisVal = millis();
 
   // Logging the Moving Window average of the Voltage and Current for every 200 ms.
-  if(millisVal % 200 == 0) {
+  if (millisVal % 200 == 0) {
 
     counter = (counter + 1) % 20;
-   
+
     // Need to calculate the Running Average
     VoltVals[counter] = readVoltage();
     CurrentVals[counter] = readCurrent();
-    
-     // Calculating the Running Average of Voltage and Current every 200 ms
-     avgVolt = MWAvg(counter, &sumVoltage, VoltVals);
-     avgCurrent = MWAvg(counter, &sumCurrent, CurrentVals);
-     float Power = avgVolt * avgCurrent;
 
-     newEnergy += abs(Power) * 0.2;
+    // Calculating the Running Average of Voltage and Current every 200 ms
+    avgVolt = MWAvg(counter, &sumVoltage, VoltVals);
+    avgCurrent = MWAvg(counter, &sumCurrent, CurrentVals);
+    float Power = avgVolt * avgCurrent;
 
-     // Saving the Data to a LogFile.
-     saveLogData(avgVolt, avgCurrent, Power, millisVal, Energy + newEnergy/1000);
+    newEnergy += abs(Power) * 0.2; // This always the newly computed Energy
+
+    // Saving the Data to a LogFile.
+    saveLogData(avgVolt, avgCurrent, Power, millisVal, Energy + newEnergy / 1000);
   }
 
   // Storing the Energy into the EEPROM every 10 Second
@@ -202,11 +209,20 @@ void loop() {
     Serial.println("");
     Energy1 += newEnergy / 1000;
     newEnergy = 0;
-    
+
     // Writing the Value of Energy to the EEPROM Memory so that the most recent Energy Value is available even when the power is switched off.
     EEPROM.put(0, Energy);
     EEPROM.put(100, Energy); // Just Making a Duplicate Copy
   }
+}
+
+void reset_eeprom() {
+   Serial.println("Inside change in the Button State");
+  
+  // Clearing the value in the Counter
+  Energy = 0; // Clearing the Cumulative Energy Stored in the EEPROM.
+  EEPROM.put(0, Energy);
+  EEPROM.put(100, Energy);
 }
 
 // Debouncing PushButton
@@ -275,17 +291,17 @@ void saveLogData(float Volt, float Current, float Power, unsigned long millisVal
 
   logFile.print(Current);
   logFile.print(",");
-    
-  logFile.print(Power/1000); // Logging the Power in kW
 
-  Serial.print(Power/1000);
-  
+  logFile.print(Power / 1000); // Logging the Power in kW
+
+  Serial.print(Power / 1000);
+
   // Logging the Energy every 2 Seconds in the LogFile
   if ((millisVal % LOG_INTERVAL) == 0) {
     logFile.print(",");
     logFile.print(Energy); // 2s Interval and Logging the Energy in kJ
 
-    if(millisVal % 10000 == 0) {
+    if (millisVal % 10000 == 0) {
       logFile.print(",");
       logFile.print("(Energy Stored)");
     }
@@ -293,7 +309,7 @@ void saveLogData(float Volt, float Current, float Power, unsigned long millisVal
     if ((Energy) > 10) {
       digitalWrite(redLEDPin, HIGH);
     }
-  
+
     // Serial Monitor
     Serial.print(",");
     Serial.print(Energy); // Storing the Energy Value in kJ
@@ -317,11 +333,11 @@ void saveLogData(float Volt, float Current, float Power, unsigned long millisVal
 // This is used to calculate the Moving Window Average.
 // REMEMBER: In this case, we are considering an array of 20 Values but just taking an Moving Window Average of past 10 values
 float MWAvg(int newIndex, float* sumVals, float* arrayVals) {
-    
-    int lastIndex = (10 + newIndex) % 20;
-    *sumVals = *sumVals - arrayVals[lastIndex] + arrayVals[newIndex];
-    return *sumVals / 10;
-//    return(sum - arrayVals[lastIndex] + arrayVals[newIndex]);        
+
+  int lastIndex = (10 + newIndex) % 20;
+  *sumVals = *sumVals - arrayVals[lastIndex] + arrayVals[newIndex];
+  return *sumVals / 10;
+  //    return(sum - arrayVals[lastIndex] + arrayVals[newIndex]);
 }
 
 //  LCD  FUNCTIONS-- keep the ones you need.
