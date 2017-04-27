@@ -324,7 +324,7 @@ void saveLogData(float Volt, float Current, float Power, unsigned long millisVal
   //Serial.print(", ");
 
     // When the power goes more than 10.2kW
-    if (abs(Power/1000) >= 10.2) {
+    if (abs(Power/1000) >= 14.4) {
       //Serial.println("Power Outage");
       digitalWrite(redLEDPin, HIGH);
     }
