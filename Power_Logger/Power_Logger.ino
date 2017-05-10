@@ -1,9 +1,16 @@
 #include <EEPROM.h>
 #include <SD.h>
-
+//#include<Adafruit_Sensor.h>
+//#include<Adafruit_ADXL345_U.h>
 #include "RTClib.h"
-   
-RTC_DS1307 rtc; // This is used to fetch the RealTime Clock
+
+/* Peripheral Devices */
+// This is used to fetch the RealTime Clock
+RTC_DS1307 rtc;
+
+// Assigining a Unique ID to the Accelerometer Device
+//Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
+
 char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 
 #define LOG_INTERVAL 2000 // millis between entries
@@ -13,7 +20,7 @@ char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursd
 
 // Digital pins that connect to LEDs
 const int redLEDPin = 8; // Warning LED
-const int BUTTON = 7; // Switch Off Button
+const int BUTTON = 3; // Switch Off Button
 
 // This Pin is used to clear the EEPROM Memory
 // This is used to setup an interrupt to clear the EEPROM Memory when a button connected to Digital Pin 2 is pressed
@@ -27,7 +34,6 @@ File logFile;
 char filename[] = "LOGGER53.csv";
 
 // Analog Sensors
-
 // Used for Debouncing Push Button
 boolean currentButton = LOW;
 boolean lastButton = HIGH;
@@ -72,6 +78,7 @@ void setup() {
 
   // Setting the EEPROM Clear Button
   attachInterrupt(digitalPinToInterrupt(ClearMemory), reset_eeprom, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON), reset_power_led, FALLING);
   
   // Beginning the RTC. If this step is not performed, then RTC will read out very abnormal Values.
   if (! rtc.begin()) {
@@ -179,13 +186,11 @@ void loop() {
   unsigned long millisVal = millis();
 
   // This function is used to read the input from the External RESET Button
-  //externalReset(millisVal);
-
   // External Reset Logic for the Power Alarm
-  if(digitalRead(BUTTON) == 0) {
-    digitalWrite(redLEDPin, LOW); 
-  }
-    
+//  if(digitalRead(BUTTON) == 0) {
+//    digitalWrite(redLEDPin, LOW); 
+//  }
+
   // Logging the Moving Window average of the Voltage and Current for every 200 ms.
   if (millisVal % 200 == 0) {
 
@@ -193,7 +198,7 @@ void loop() {
 
     // Need to calculate the Running Average
     VoltVals[counter] = readVoltage();
-    CurrentVals[counter] = readCurrent();
+    CurrentVals[counter] = -1*readCurrent(); // Current Reversal is being done due to current sensor configuration on the physics box
 
     // Calculating the Running Average of Voltage and Current every 200 ms
     avgVolt = MWAvg(counter, &sumVoltage, VoltVals);
@@ -230,6 +235,13 @@ void reset_eeprom() {
   Energy = 0; // Clearing the Cumulative Energy Stored in the EEPROM.
   EEPROM.put(0, Energy);
   EEPROM.put(100, Energy);
+}
+
+void reset_power_led() {
+  Serial.println("Reset Power");
+
+  // Switching off the power LED
+  digitalWrite(redLEDPin, LOW);
 }
 
 // Debouncing PushButton
