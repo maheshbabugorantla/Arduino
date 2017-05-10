@@ -1,19 +1,25 @@
 #include <EEPROM.h>
 #include <SD.h>
-
+#include<Wire.h>
 #include "RTClib.h"
 
-RTC_DS1307 rtc; // This is used to fetch the RealTime Clock
+/* Peripheral Devices */
+// This is used to fetch the RealTime Clock
+RTC_PCF8523 rtc;
+
+// Assigining a Unique ID to the Accelerometer Device
+//Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
+
 char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 
 #define LOG_INTERVAL 2000 // millis between entries
 
-#define VoltIn A0 // Potentiometer 1 (To Simulate the Voltage input)
-#define CurrIn A1 // Potentiometer 2 (To Simulate the Current input)
+#define CurrIn A0 // Potentiometer 1 (To Simulate the Voltage input)
+#define VoltIn A1 // Potentiometer 2 (To Simulate the Current input)
 
 // Digital pins that connect to LEDs
-const int redLEDPin = 7; // Warning LED
-const int BUTTON = 8; // Switch Off Button
+const int redLEDPin = 8; // Warning LED
+const int BUTTON = 3; // Switch Off Button
 
 // This Pin is used to clear the EEPROM Memory
 // This is used to setup an interrupt to clear the EEPROM Memory when a button connected to Digital Pin 2 is pressed
@@ -24,10 +30,9 @@ const int chipSelect = 10;
 
 // The Logging File
 File logFile;
-char filename[] = "LOGGER52.csv";
+char filename[] = "LOGGER54.csv";
 
 // Analog Sensors
-
 // Used for Debouncing Push Button
 boolean currentButton = LOW;
 boolean lastButton = HIGH;
@@ -63,13 +68,17 @@ void setup() {
   pinMode(CurrIn, INPUT); // Analog Pin 1
   pinMode(BUTTON, INPUT); // Configuring the Button Pin to the INPUT Mode
   pinMode(redLEDPin, OUTPUT); // Configuring the Warning LED Pin to the OUTPUT Mode
+  pinMode(ClearMemory, INPUT); // Configuring the Clear the EEPROM Button
 
-  // Setting the EEPROM Clear Button
-  attachInterrupt(digitalPinToInterrupt(ClearMemory), reset_eeprom, RISING);
-  
   // Resetting the Warning LED
   digitalWrite(redLEDPin, LOW);
+  digitalWrite(BUTTON, HIGH); // Switching on the Internal Pull-Up Resistors
+  digitalWrite(ClearMemory, HIGH); // Switching on the Internal Pull-Up Resistors
 
+  // Setting the EEPROM Clear Button
+  attachInterrupt(digitalPinToInterrupt(ClearMemory), reset_eeprom, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON), reset_power_led, FALLING);
+  
   // Beginning the RTC. If this step is not performed, then RTC will read out very abnormal Values.
   if (! rtc.begin()) {
     Serial.println("Couldn't find RTC");
@@ -77,12 +86,14 @@ void setup() {
   }
 
   // The following line sets the RTC to date & time this sketch was compiled.
-  if (!rtc.isrunning()) {
+  if (!rtc.initialized()) {
+    Serial.println("Adjusting RTC");
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   }
 
   // Initialize the SD Card
   Serial.print("Initializing SD card... ");
+  clearLCD();
   delay(500);
 
   // Make sure that default chip select pin is set to output
@@ -96,11 +107,13 @@ void setup() {
   }
 
   Serial.println("Card Initialized");
+  clearLCD();
   delay(500);
 
-  Serial.print("Logging to: ");
-  Serial.println(filename);
+  //Serial.print("Logging to: ");
+  Serial.print(filename);
   delay(1000);
+  clearLCD();
 
   logFile = SD.open(filename, FILE_WRITE);
   // Don't forget to use RTC here.
@@ -126,7 +139,7 @@ void setup() {
   logFile.println();
 
   // Printing to the Serial
-  Serial.print(now.year(), DEC);
+/*  Serial.print(now.year(), DEC);
   Serial.print('/');
   Serial.print(now.month(), DEC);
   Serial.print('/');
@@ -139,25 +152,23 @@ void setup() {
   Serial.print(now.minute(), DEC);
   Serial.print(':');
   Serial.print(now.second(), DEC);
-  Serial.println();
+  Serial.println(); */
 
   logFile.println("millis,Volt,Current,Power(kW),Energy(kJ)");
   logFile.close();
-  Serial.println("millis,Volt,Current,Power(kW),Energy(kJ)");
+//  Serial.println("millis,Volt,Current,Power(kW),Energy(kJ)");
 
   clearLCD(); // Clear the Contents of LCD.
   displayOn(); // LCD Display On
   cursorHome(); // Set the LCD
-
-  clearLCD(); // Clear the Contents of LCD.
-
-
+  
   EEPROM.get(0, Energy);
   resetFlag = true;
 
-  Serial.print("Setup Time: ");
+/*  Serial.print("Setup Time: ");
   Serial.print(millis() - millisVal);
-  Serial.println("");
+  Serial.println(""); */
+  
 }
 
 void loop() {
@@ -166,15 +177,19 @@ void loop() {
   DateTime now = rtc.now();
 
   if (resetFlag) {
-    Serial.print("New Energy: ");
-    Serial.print(Energy);
-    Serial.println("");
+    //Serial.print("New Energy: ");
+    //Serial.print(Energy);
+    //Serial.println("");
     resetFlag = false;
   }
-  // This function is used to read the input from the External RESET Button
-  //externalReset();
-
+  
   unsigned long millisVal = millis();
+
+  // This function is used to read the input from the External RESET Button
+  // External Reset Logic for the Power Alarm
+//  if(digitalRead(BUTTON) == 0) {
+//    digitalWrite(redLEDPin, LOW); 
+//  }
 
   // Logging the Moving Window average of the Voltage and Current for every 200 ms.
   if (millisVal % 200 == 0) {
@@ -183,14 +198,14 @@ void loop() {
 
     // Need to calculate the Running Average
     VoltVals[counter] = readVoltage();
-    CurrentVals[counter] = readCurrent();
+    CurrentVals[counter] = -1*readCurrent(); // Current Reversal is being done due to current sensor configuration on the physics box
 
     // Calculating the Running Average of Voltage and Current every 200 ms
     avgVolt = MWAvg(counter, &sumVoltage, VoltVals);
     avgCurrent = MWAvg(counter, &sumCurrent, CurrentVals);
     float Power = avgVolt * avgCurrent;
 
-    newEnergy += abs(Power) * 0.2; // This always the newly computed Energy
+    newEnergy += Power * 0.2; // This always the newly computed Energy
 
     // Saving the Data to a LogFile.
     saveLogData(avgVolt, avgCurrent, Power, millisVal, Energy + newEnergy / 1000);
@@ -200,11 +215,10 @@ void loop() {
   if (millisVal % 10000 == 0) {
     // Fetching the stored EEPROM value when the board is reset or is powered.
     EEPROM.get(0, Energy);
-    clearLCD();
     Energy += newEnergy / 1000; // Here we are computing cumulative energy value in kJ
-    Serial.print("Energy Stored: ");
-    Serial.print(Energy);
-    Serial.println("");
+    //Serial.print("Energy Stored: ");
+    //Serial.print(Energy);
+    //Serial.println("");
     Energy1 += newEnergy / 1000;
     newEnergy = 0;
 
@@ -215,7 +229,7 @@ void loop() {
 }
 
 void reset_eeprom() {
-   Serial.println("Inside change in the Button State");
+   Serial.println("Inside EEPROM");
   
   // Clearing the value in the Counter
   Energy = 0; // Clearing the Cumulative Energy Stored in the EEPROM.
@@ -223,9 +237,17 @@ void reset_eeprom() {
   EEPROM.put(100, Energy);
 }
 
+void reset_power_led() {
+  Serial.println("Reset Power");
+
+  // Switching off the power LED
+  digitalWrite(redLEDPin, LOW);
+}
+
 // Debouncing PushButton
-boolean debounce(boolean lastButton) {
-  boolean currentButton = digitalRead(BUTTON);
+/*boolean debounce(boolean lastButton) {
+  
+  currentButton = digitalRead(BUTTON);
 
   if (lastButton != currentButton)
   {
@@ -237,17 +259,27 @@ boolean debounce(boolean lastButton) {
 }
 
 // This is used to reset the RedLight (That indicates the Energy Outage)
-void externalReset()
-{
+void externalReset(unsigned long millisVal)
+{    
   currentButton = debounce(lastButton);
 
+ if(millisVal % 200 == 0) {
+  Serial.print("Current Button: ");
+  Serial.print(currentButton);
+  Serial.println("");
+
+  Serial.print("Last Button: ");
+  Serial.print(lastButton);
+  Serial.println("");
+ }
+ 
   if (lastButton == LOW && currentButton == HIGH)
   {
     digitalWrite(redLEDPin, LOW);
     //resetFlag = true;
   }
   lastButton = currentButton;
-}
+} */
 
 void error(char *str) {
 
@@ -261,13 +293,14 @@ void error(char *str) {
 float readCurrent() {
   long Current = analogRead(CurrIn); // Always returns a value between 0 and 1023
   float CurrentVal = (Current / 1023.0) * 5.0; // Converting Digital Values (0 to 1023) to Analog Voltages
-  CurrentVal = ((CurrentVal - 2.5) / 2.5) * 300; // 300 Amperes
+  CurrentVal = ((CurrentVal - 2.5) * 320); // -640 Amperes to 640 Amperes
+  
   return CurrentVal;
 }
 
 // Always returns an Analog Voltage value between 0.00 and 5.00 Volts.
 float readVoltage() {
-  return ((analogRead(VoltIn) / 1023.0) * 5.0);
+  return ((analogRead(VoltIn) / 1023.0) * 100.0);
 }
 
 // Power in Watts, Energy in KiloJoules
@@ -280,45 +313,56 @@ void saveLogData(float Volt, float Current, float Power, unsigned long millisVal
   logFile.print(millisVal);
   logFile.print(",");
 
-/*
- * Serial.println("");
- * Serial.print(millisVal);
- * Serial.print(", ");
-*/
+  //Serial.print(millisVal);
+  //Serial.print(", ");
 
-  logFile.print(Volt);
+
+  logFile.print(Volt, 1);
   logFile.print(",");
 
-  logFile.print(Current);
+  //Serial.print(Volt);
+  //Serial.print(", ");
+
+  logFile.print(Current, 1);
   logFile.print(",");
 
-  logFile.print(Power / 1000); // Logging the Power in kW
+  //Serial.print(Current);
+  //Serial.print(", ");
 
-//  Serial.print(Power / 1000);
+  logFile.print(Power / 1000, 1); // Logging the Power in kW
 
+  // Printing Power to Serial Monitor
+  //Serial.print(Power / 1000);
+  //Serial.print(", ");
+
+    // When the power goes more than 10.2kW
+    if (abs(Power/1000) >= 14.4) {
+      logFile.print(" (Over Power)");
+      //Serial.println("Power Outage");
+      digitalWrite(redLEDPin, HIGH);
+    }
+  
   // Logging the Energy every 2 Seconds in the LogFile
   if ((millisVal % LOG_INTERVAL) == 0) {
     logFile.print(",");
-    logFile.print(Energy); // 2s Interval and Logging the Energy in kJ
+    logFile.print(Energy, 0); // 2s Interval and Logging the Energy in kJ
+
+    clearLCD();
+    cursorSet(1, 0); // This sets the Cursor at the First Character on the First Line
+    Serial.print(Energy, 0); // This will print the Energy onto the Serial LCD
 
     if (millisVal % 10000 == 0) {
       logFile.print(",");
       logFile.print("(Energy Stored)");
     }
 
-    if ((Energy) > 10) {
-      digitalWrite(redLEDPin, HIGH);
-    }
-
     // Serial Monitor
-//    Serial.print(",");
-    Serial.print(Energy); // Storing the Energy Value in kJ
-    Serial.println("");
+    //Serial.print(Energy); // Storing the Energy Value in kJ
     
     // Writing to the Serial LCD
     //cursorSet(1, 0);
     //Serial.write("Energy: ");
-    //cursorSet(1, 9);
+    //cursorSet(1, 2);
 
     //Serial.write(Serial.print(Energy, 2));
     //cursorSet(1, 13);
@@ -326,7 +370,7 @@ void saveLogData(float Volt, float Current, float Power, unsigned long millisVal
   }
 
   logFile.println("");
-//  Serial.println("");
+  //Serial.println("");
 
   logFile.close();
 }
@@ -360,16 +404,6 @@ void displayOff() {
   Serial.write(254); // Prefix 0xFE
   Serial.write(66); // 0x42
 }
-
-/*void underlineCursorOn() {
-  Serial.write(254); // Prefix 0xFE
-  Serial.write(71); // 0x47
-}
-
-void underlineCursorOff() {
-  Serial.write(254); // Prefix 0xFE
-  Serial.write(72); // 0x48
-}*/
 
 // start a new line
 void newLine() {
@@ -410,12 +444,6 @@ void cursorSet(int ypos, int xpos) {
   //Serial.write(ypos); //Row position
 }
 
-// backspace and erase previous character
-/*void backSpace() {
-  Serial.write(254);
-  Serial.write(78); // 0x4E
-}*/
-
 // move cursor left by one Space
 void cursorLeft() {
   Serial.write(254);
@@ -427,60 +455,3 @@ void cursorRight() {
   Serial.write(254);
   Serial.write(74); // 0x4A
 }
-
-// set LCD contrast
-/*void setContrast(int contrast) {
-  Serial.write(254);
-  Serial.write(82); // 0x52
-
-  // Contrast value should be between 0 and 50 of size 1 byte
-  if (contrast <= 0) {
-    Serial.write(0);
-  }
-  else if (contrast >= 50) {
-    Serial.write(50);
-  }
-  else {
-    Serial.write(contrast);
-  }
-}
-
-void setBacklightBrightness(int brightness) {
-
-  Serial.write(254); // 0xFE
-  Serial.write(83); // 0x53
-
-  if (brightness <= 0) {
-    Serial.write(0);
-  }
-  else if (brightness >= 8) {
-    Serial.write(8);
-  }
-  else {
-    Serial.write(brightness);
-  }
-}
-
-void blinkingCursorOn() {
-  Serial.write(254); // 0xFE
-  Serial.write(75); // 0x4B
-}
-
-void blinkingCursorOff() {
-  Serial.write(254); // 0xFE
-  Serial.write(76); // 0x4C
-}
-
-// Shift the Display Left by One Space
-// REMEMBER: The Cursor Position also moves with the Display and the Display data is not altered
-void shiftLeft() {
-  Serial.write(254); // 0xFE
-  Serial.write(85); // 0x55
-}
-
-// Shift the Display Right by One Space
-// REMEMBER: The Cursor Position also moves with the Display and the Display data is not altered
-void shiftRight() {
-  Serial.write(254); // 0xFE
-  Serial.write(86); // 0x56
-} */

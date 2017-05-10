@@ -1,33 +1,46 @@
 #include <EEPROM.h>
 #include <SD.h>
-
+#include<Adafruit_Sensor.h>
+#include<Adafruit_ADXL345_U.h>
 #include "RTClib.h"
 
-RTC_DS1307 rtc; // This is used to fetch the RealTime Clock
+/* Peripheral Devices */
+// This is used to fetch the RealTime Clock
+RTC_DS1307 rtc;
+
+// This is used to refer to the Accelerometer (Initializations done in the setup() function)
+Adafruit_ADXL345_Unified accel;
+
 char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 
-#define LOG_INTERVAL 2000 // millis between entries
+#define LOG_INTERVAL 2000 // 2000 millisecond between updates
+#define VOLT_CURRENT_LOG_INTERVAL 200 // 200 millisecond between updates
+#define RPM_LOG_INTERVAL 10000 // 200 millisecond between updates
+#define EEPROM_UPDATE_INTERVAL 10000 // 10 seconds between updates
 
-#define VoltIn A0 // Potentiometer 1 (To Simulate the Voltage input)
-#define CurrIn A1 // Potentiometer 2 (To Simulate the Current input)
+#define CurrIn A0 // Potentiometer 1 (To Simulate the Voltage input)
+#define VoltIn A1 // Potentiometer 2 (To Simulate the Current input)
 
-// Digital pins that connect to LEDs
-const int redLEDPin = 7; // Warning LED
-const int BUTTON = 8; // Switch Off Button
+#define AnalogIn2 A2 // Analog Input for something (WILL UPDATE LATER)
+#define AnalogIn3 A3 // Analog Input for something (WILL UPDATE LATER)
+
+// This pin is used to connect the Hall Effect Sensor
+const int Hall_Effect_Sensor = 3; // Switch Off Button
 
 // This Pin is used to clear the EEPROM Memory
 // This is used to setup an interrupt to clear the EEPROM Memory when a button connected to Digital Pin 2 is pressed
 const int ClearMemory = 2;
+
+const int add_Digital_IO = 4; // Additional Digital IO (WILL UPDATE LATER)
 
 // for the data logging shield, we use digital pin 10 for the SD cs line
 const int chipSelect = 10;
 
 // The Logging File
 File logFile;
-char filename[] = "LOGGER52.csv";
+char filename[] = "LOGGER55.csv";
 
 // Analog Sensors
-
 // Used for Debouncing Push Button
 boolean currentButton = LOW;
 boolean lastButton = HIGH;
@@ -48,6 +61,15 @@ float Energy; // = 0.000f;
 float Energy1; // = 0.000f;
 float newEnergy = 0;
 
+// This is used to keep track of the no.of revolutions made
+float revolutions = 0;
+
+// This is used to store the RPM (Revolutions Per Minute) of the Kart
+float rpm = 0;
+
+// This is used to multiply the impulses computed for every 'x' ms as specified by ACCELEROMETER_LOG_INTERVAL
+float rpm_factor = 0;
+
 boolean resetFlag = false;
 
 void setup() {
@@ -59,17 +81,29 @@ void setup() {
 
   unsigned long millisVal = millis();
 
+  // Setting the pin Configurations
   pinMode(VoltIn, INPUT);   // Analog Pin 0
   pinMode(CurrIn, INPUT); // Analog Pin 1
-  pinMode(BUTTON, INPUT); // Configuring the Button Pin to the INPUT Mode
-  pinMode(redLEDPin, OUTPUT); // Configuring the Warning LED Pin to the OUTPUT Mode
+  pinMode(Hall_Effect_Sensor, INPUT); // Configuring the Hall Effect Sensor Pin to the INPUT Mode
+  pinMode(ClearMemory, INPUT); // Configuring the Clear the EEPROM Button
 
+  // These pins will read 5V when there is no input from external interface or the no inputs are connected
+  pinMode(AnalogIn2, INPUT_PULLUP); // Activating the Pull-Up Resistors for Analog Pin 2
+  pinMode(AnalogIn3, INPUT_PULLUP); // Activating the Pull-Up Resistors for Analog Pin 3
+    
+  // Setting initial Pin Values
+  digitalWrite(Hall_Effect_Sensor, HIGH); // Switching on the Internal Pull-Up Resistors
+  digitalWrite(ClearMemory, HIGH); // Switching on the Internal Pull-Up Resistors
+
+  /* Setting up all the interrupts */
   // Setting the EEPROM Clear Button
-  attachInterrupt(digitalPinToInterrupt(ClearMemory), reset_eeprom, RISING);
-  
-  // Resetting the Warning LED
-  digitalWrite(redLEDPin, LOW);
+  attachInterrupt(digitalPinToInterrupt(ClearMemory), reset_eeprom, FALLING);
+  // Setting the Clear for Power Outage LED
+  attachInterrupt(digitalPinToInterrupt(Hall_Effect_Sensor), count_revolutions, FALLING);
 
+  // Assigining a Unique ID to the Accelerometer Device and initializing it.
+  accel = Adafruit_ADXL345_Unified(12345);
+  
   // Beginning the RTC. If this step is not performed, then RTC will read out very abnormal Values.
   if (! rtc.begin()) {
     Serial.println("Couldn't find RTC");
@@ -81,8 +115,23 @@ void setup() {
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   }
 
+  /*
+   * Accelerometer Initialization
+   */
+  if(!accel.begin()) {
+    Serial.println("Accel Failure");
+    //while(1); //
+  }
+
+  // Setting the range of g's the accelerometer can measure
+  accel.setRange(ADXL345_RANGE_16_G);
+
+  // This is used to compute RPM of the vehicle from the count of impulses
+  rpm_factor = ((1000 * 60) / RPM_LOG_INTERVAL);
+
   // Initialize the SD Card
   Serial.print("Initializing SD card... ");
+  clearLCD();
   delay(500);
 
   // Make sure that default chip select pin is set to output
@@ -92,15 +141,19 @@ void setup() {
   // Checking if the SD Card is present and can be initialized:
   if (!SD.begin(chipSelect)) {
     Serial.println("Card failed, or not present");
-    return;
+    delay(2000);
+    clearLCD();
+    //return; //
   }
 
   Serial.println("Card Initialized");
-  delay(500);
-
-  Serial.print("Logging to: ");
-  Serial.println(filename);
+  clearLCD();
   delay(1000);
+
+  //Serial.print("Logging to: ");
+  Serial.print(filename);
+  delay(1000);
+  clearLCD();
 
   logFile = SD.open(filename, FILE_WRITE);
   // Don't forget to use RTC here.
@@ -126,7 +179,7 @@ void setup() {
   logFile.println();
 
   // Printing to the Serial
-  Serial.print(now.year(), DEC);
+/*  Serial.print(now.year(), DEC);
   Serial.print('/');
   Serial.print(now.month(), DEC);
   Serial.print('/');
@@ -139,25 +192,23 @@ void setup() {
   Serial.print(now.minute(), DEC);
   Serial.print(':');
   Serial.print(now.second(), DEC);
-  Serial.println();
+  Serial.println(); */
 
-  logFile.println("millis,Volt,Current,Power(kW),Energy(kJ)");
+  logFile.println("millis,Volt,Current,Power(kW),Energy(kJ),Analog Input 2,Analog Input 3,X-Accel(m/s^2),Y-Accel(m/s^2),Z-Accel(m/s^2),RPM");
   logFile.close();
-  Serial.println("millis,Volt,Current,Power(kW),Energy(kJ)");
+//  Serial.println("millis,Volt,Current,Power(kW),Energy(kJ)");
 
   clearLCD(); // Clear the Contents of LCD.
   displayOn(); // LCD Display On
   cursorHome(); // Set the LCD
-
-  clearLCD(); // Clear the Contents of LCD.
-
-
+  
   EEPROM.get(0, Energy);
   resetFlag = true;
 
-  Serial.print("Setup Time: ");
+/*  Serial.print("Setup Time: ");
   Serial.print(millis() - millisVal);
-  Serial.println("");
+  Serial.println(""); */
+  
 }
 
 void loop() {
@@ -166,45 +217,56 @@ void loop() {
   DateTime now = rtc.now();
 
   if (resetFlag) {
-    Serial.print("New Energy: ");
-    Serial.print(Energy);
-    Serial.println("");
+    //Serial.print("New Energy: ");
+    //Serial.print(Energy);
+    //Serial.println("");
     resetFlag = false;
   }
-  // This function is used to read the input from the External RESET Button
-  //externalReset();
-
+  
   unsigned long millisVal = millis();
 
   // Logging the Moving Window average of the Voltage and Current for every 200 ms.
-  if (millisVal % 200 == 0) {
+  if (millisVal % VOLT_CURRENT_LOG_INTERVAL == 0) {
 
     counter = (counter + 1) % 20;
 
     // Need to calculate the Running Average
     VoltVals[counter] = readVoltage();
-    CurrentVals[counter] = readCurrent();
+    CurrentVals[counter] = -1*readCurrent(); // Current Reversal is being done due to current sensor configuration on the physics box
 
     // Calculating the Running Average of Voltage and Current every 200 ms
     avgVolt = MWAvg(counter, &sumVoltage, VoltVals);
     avgCurrent = MWAvg(counter, &sumCurrent, CurrentVals);
     float Power = avgVolt * avgCurrent;
+    
+    newEnergy += Power * 0.2; // This always the newly computed Energy
 
-    newEnergy += abs(Power) * 0.2; // This always the newly computed Energy
+    // Getting new Accelerometer Event
+    sensors_event_t accelEvent;
+    accel.getEvent(&accelEvent); // Library Call
+    
+    // Computing the RPM for every 10 seconds
+    if(millisVal % RPM_LOG_INTERVAL == 0)
+    {
+      rpm = (revolutions * rpm_factor);
+      revolutions = 0;
+    }
+
+    float analog_input_2 = readAnalogInput2();
+    float analog_input_3 = readAnalogInput3();
 
     // Saving the Data to a LogFile.
-    saveLogData(avgVolt, avgCurrent, Power, millisVal, Energy + newEnergy / 1000);
+    saveLogData(avgVolt, avgCurrent, Power, millisVal, Energy + newEnergy / 1000, analog_input_2, analog_input_3, rpm, accelEvent);
   }
 
   // Storing the Energy into the EEPROM every 10 Second
-  if (millisVal % 10000 == 0) {
+  if (millisVal % EEPROM_UPDATE_INTERVAL == 0) {
     // Fetching the stored EEPROM value when the board is reset or is powered.
     EEPROM.get(0, Energy);
-    clearLCD();
     Energy += newEnergy / 1000; // Here we are computing cumulative energy value in kJ
-    Serial.print("Energy Stored: ");
-    Serial.print(Energy);
-    Serial.println("");
+    //Serial.print("Energy Stored: ");
+    //Serial.print(Energy);
+    //Serial.println("");
     Energy1 += newEnergy / 1000;
     newEnergy = 0;
 
@@ -215,7 +277,7 @@ void loop() {
 }
 
 void reset_eeprom() {
-   Serial.println("Inside change in the Button State");
+   Serial.println("Inside EEPROM");
   
   // Clearing the value in the Counter
   Energy = 0; // Clearing the Cumulative Energy Stored in the EEPROM.
@@ -223,30 +285,9 @@ void reset_eeprom() {
   EEPROM.put(100, Energy);
 }
 
-// Debouncing PushButton
-boolean debounce(boolean lastButton) {
-  boolean currentButton = digitalRead(BUTTON);
-
-  if (lastButton != currentButton)
-  {
-    delay(10); // Delaying for 10ms will allow the button state to settle down
-    currentButton = digitalRead(BUTTON);
-  }
-
-  return (currentButton);
-}
-
-// This is used to reset the RedLight (That indicates the Energy Outage)
-void externalReset()
-{
-  currentButton = debounce(lastButton);
-
-  if (lastButton == LOW && currentButton == HIGH)
-  {
-    digitalWrite(redLEDPin, LOW);
-    //resetFlag = true;
-  }
-  lastButton = currentButton;
+// This keeps count of the no. of revolutions for every 'x' ms as specified by VOLT_CURRENT_LOG_INTERVAL 
+void count_revolutions() {
+  revolutions += 1;  
 }
 
 void error(char *str) {
@@ -261,72 +302,96 @@ void error(char *str) {
 float readCurrent() {
   long Current = analogRead(CurrIn); // Always returns a value between 0 and 1023
   float CurrentVal = (Current / 1023.0) * 5.0; // Converting Digital Values (0 to 1023) to Analog Voltages
-  CurrentVal = ((CurrentVal - 2.5) / 2.5) * 300; // 300 Amperes
+  CurrentVal = ((CurrentVal - 2.5) * 320); // -640 Amperes to 640 Amperes
+  
   return CurrentVal;
 }
 
 // Always returns an Analog Voltage value between 0.00 and 5.00 Volts.
 float readVoltage() {
-  return ((analogRead(VoltIn) / 1023.0) * 5.0);
+  return ((analogRead(VoltIn) / 1023.0) * 100.0);
+}
+
+float readAnalogInput2() {
+  return (analogRead(A2) * (5.0 / 1023.0));
+}
+
+float readAnalogInput3() {
+  return (analogRead(A3) * (5.0 / 1023.0));
 }
 
 // Power in Watts, Energy in KiloJoules
-void saveLogData(float Volt, float Current, float Power, unsigned long millisVal, float Energy) {
+void saveLogData(float Volt, float Current, float Power, unsigned long millisVal, float Energy, float AI2, float AI3, float rpm, sensors_event_t accelEvent) {
   // This opens a new file for writing if it doesn't exist
   // Else it will append the data to the end of the file
   logFile = SD.open(filename, FILE_WRITE);
+
+  Serial.println("Inside write file");
 
   // Logging the PhotoVolt data to the SD Card
   logFile.print(millisVal);
   logFile.print(",");
 
-/*
- * Serial.println("");
- * Serial.print(millisVal);
- * Serial.print(", ");
-*/
+  //Serial.print(millisVal);
+  //Serial.print(", ");
 
   logFile.print(Volt);
   logFile.print(",");
+
+  //Serial.print(Volt);
+  //Serial.print(", ");
 
   logFile.print(Current);
   logFile.print(",");
 
   logFile.print(Power / 1000); // Logging the Power in kW
-
-//  Serial.print(Power / 1000);
+  
+  // When the power goes more than 10.2kW
+//  if (abs(Power/1000) >= 14.4) {
+//     digitalWrite(redLEDPin, HIGH);
+//  }
 
   // Logging the Energy every 2 Seconds in the LogFile
   if ((millisVal % LOG_INTERVAL) == 0) {
     logFile.print(",");
     logFile.print(Energy); // 2s Interval and Logging the Energy in kJ
 
-    if (millisVal % 10000 == 0) {
+    clearLCD();
+    cursorSet(1, 0); // This sets the Cursor at the First Character on the First Line
+    Serial.print(Energy); // This will print the Energy onto the Serial LCD
+
+    if (millisVal % EEPROM_UPDATE_INTERVAL == 0) {
       logFile.print(",");
       logFile.print("(Energy Stored)");
     }
-
-    if ((Energy) > 10) {
-      digitalWrite(redLEDPin, HIGH);
-    }
-
-    // Serial Monitor
-//    Serial.print(",");
-    Serial.print(Energy); // Storing the Energy Value in kJ
-    Serial.println("");
-    
-    // Writing to the Serial LCD
-    //cursorSet(1, 0);
-    //Serial.write("Energy: ");
-    //cursorSet(1, 9);
-
-    //Serial.write(Serial.print(Energy, 2));
-    //cursorSet(1, 13);
-    //Serial.write(" kJ");
   }
 
+  // Logging the Analog Input 2
+  logFile.print(",");
+  logFile.print(AI2);
+
+  // Logging the Analog Input 3
+  logFile.print(",");
+  logFile.print(AI3);
+
+  // Logging the RPM
+  logFile.print(",");
+  logFile.print(rpm);
+
+  // X-Axis g-Force (Acceleration)
+  logFile.print(",");
+  logFile.print(accelEvent.acceleration.x);
+
+  // Y-Axis g-Force (Acceleration)
+  logFile.print(",");
+  logFile.print(accelEvent.acceleration.y);
+
+  // Z-Axis g-Force (Acceleration)
+  logFile.print(",");
+  logFile.print(accelEvent.acceleration.z);
+  
   logFile.println("");
-//  Serial.println("");
+  //Serial.println("");
 
   logFile.close();
 }
